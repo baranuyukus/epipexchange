@@ -1,0 +1,483 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EPIPHANY - Dinamik Fiyatlandırma Platformu</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/axios/dist/axios.min.js"></script>
+</head>
+<body>
+    <nav class="top-nav">
+        <div class="nav-content">
+            <div class="logo">EPIPHANY</div>
+            <div class="nav-time" id="currentTime"></div>
+        </div>
+    </nav>
+
+    <div class="container">
+        <div class="market-grid">
+            {% for product in products %}
+            <div class="market-card" data-id="{{ product.id }}">
+                <div class="card-header">
+                    <div class="symbol">
+                        <div class="symbol-icon">{{ product.name[0] }}</div>
+                        <div class="symbol-details">
+                            <span class="symbol-name">{{ product.name }}</span>
+                            <span class="symbol-code">{{ "DEP%03d"|format(product.id) }}</span>
+                        </div>
+                    </div>
+                    <div class="price-info">
+                        <div class="current-price">{{ "%.2f"|format(product.current_price) }} ₺</div>
+                        <div class="price-change {% if product.current_price > product.base_price %}positive{% else %}negative{% endif %}">
+                            {% set change = ((product.current_price - product.base_price) / product.base_price * 100) %}
+                            {{ "%+.2f"|format(change) }}%
+                        </div>
+                    </div>
+                </div>
+                <div class="chart" id="chart-{{ product.id }}"></div>
+                <div class="card-footer">
+                    <div class="stats">
+                        <div class="stat">
+                            <span class="stat-label">Taban</span>
+                            <span class="stat-value">{{ "%.2f"|format(product.base_price) }} ₺</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Stok</span>
+                            <span class="stat-value stock-value">{{ product.remaining_stock }}/{{ product.initial_stock }}</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Volatilite</span>
+                            <span class="stat-value volatility-value">{{ "%.1f"|format(product.volatility) }}x</span>
+                        </div>
+                        <div class="stat">
+                            <span class="stat-label">Talep</span>
+                            <span class="stat-value demand-score">{{ product.demand }}</span>
+                        </div>
+                    </div>
+                    <button class="trade-btn" onclick="buyProduct({{ product.id }})">İşlem Yap</button>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+
+        <div class="market-overview">
+            <h2>Piyasa Genel Görünümü</h2>
+            <div id="market-chart"></div>
+            <div class="market-stats">
+                <div class="stat-box">
+                    <span class="stat-title">Toplam İşlem Hacmi</span>
+                    <span class="stat-value" id="totalVolume">0 ₺</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-title">Ortalama Değişim</span>
+                    <span class="stat-value" id="avgChange">0%</span>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-title">Aktif Ürünler</span>
+                    <span class="stat-value">4</span>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let charts = {};
+        let marketChart = null;
+
+        function updateTime() {
+            const now = new Date();
+            document.getElementById('currentTime').textContent = now.toLocaleTimeString('tr-TR');
+        }
+
+        setInterval(updateTime, 1000);
+        updateTime();
+
+        function initializeCharts() {
+            {% for product in products %}
+                createProductChart({{ product.id }});
+            {% endfor %}
+            createMarketChart();
+        }
+
+        function createProductChart(productId) {
+            const trace = {
+                x: [],
+                y: [],
+                type: 'scatter',
+                mode: 'lines',
+                name: `Ürün ${productId}`,
+                line: {
+                    color: getColorForProduct(productId),
+                    width: 1.5,
+                    shape: 'linear'
+                },
+                fill: 'tonexty',
+                fillcolor: getColorForProduct(productId, 0.1)
+            };
+
+            const layout = {
+                height: 150,
+                margin: { l: 40, r: 10, t: 10, b: 20 },
+                xaxis: {
+                    showgrid: true,
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    zeroline: false,
+                    showticklabels: true,
+                    tickfont: { size: 8, color: '#8a8a8a' },
+                    tickformat: '%H:%M:%S'
+                },
+                yaxis: {
+                    showgrid: true,
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    zeroline: false,
+                    tickformat: ',.0f',
+                    tickfont: { size: 10, color: '#8a8a8a' },
+                    fixedrange: true,
+                    side: 'right'
+                },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                showlegend: false,
+                hovermode: 'x unified',
+                hoverlabel: {
+                    bgcolor: '#2c2c2c',
+                    bordercolor: '#3c3c3c',
+                    font: { color: '#ffffff' }
+                }
+            };
+
+            const config = {
+                displayModeBar: false,
+                responsive: true
+            };
+
+            charts[productId] = Plotly.newPlot(`chart-${productId}`, [trace], layout, config);
+        }
+
+        function createMarketChart() {
+            const traces = [];
+            {% for product in products %}
+                traces.push({
+                    x: [],
+                    y: [],
+                    type: 'scatter',
+                    mode: 'lines',
+                    name: '{{ product.name }}',
+                    line: {
+                        color: getColorForProduct({{ product.id }}),
+                        width: 1.5,
+                        shape: 'linear'
+                    }
+                });
+            {% endfor %}
+
+            const layout = {
+                height: 300,
+                margin: { l: 50, r: 10, t: 20, b: 30 },
+                xaxis: {
+                    showgrid: true,
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    zeroline: false,
+                    showticklabels: true,
+                    tickfont: { size: 10, color: '#8a8a8a' },
+                    tickformat: '%H:%M:%S'
+                },
+                yaxis: {
+                    showgrid: true,
+                    gridcolor: 'rgba(255,255,255,0.1)',
+                    zeroline: false,
+                    tickformat: ',.0f',
+                    tickfont: { size: 10, color: '#8a8a8a' },
+                    side: 'right'
+                },
+                paper_bgcolor: 'rgba(0,0,0,0)',
+                plot_bgcolor: 'rgba(0,0,0,0)',
+                showlegend: true,
+                legend: {
+                    orientation: 'h',
+                    y: -0.2,
+                    font: { color: '#8a8a8a' },
+                    bgcolor: 'rgba(0,0,0,0)',
+                    bordercolor: 'rgba(0,0,0,0)'
+                },
+                hovermode: 'x unified',
+                hoverlabel: {
+                    bgcolor: '#2c2c2c',
+                    bordercolor: '#3c3c3c',
+                    font: { color: '#ffffff' }
+                }
+            };
+
+            const config = {
+                displayModeBar: false,
+                responsive: true
+            };
+
+            marketChart = Plotly.newPlot('market-chart', traces, layout, config);
+        }
+
+        function getColorForProduct(id, alpha = 1) {
+            const colors = [
+                `rgba(82, 255, 83, ${alpha})`,   // Yeşil
+                `rgba(52, 152, 219, ${alpha})`,  // Mavi
+                `rgba(231, 76, 60, ${alpha})`,   // Kırmızı
+                `rgba(155, 89, 182, ${alpha})`   // Mor
+            ];
+            return colors[id];
+        }
+
+        function updateCharts() {
+            return Promise.all([
+                ...Array(4).fill().map((_, i) => updateProductChart(i)),
+                updateMarketStats()
+            ]);
+        }
+
+        function updateProductChart(productId) {
+            return new Promise((resolve, reject) => {
+                axios.get(`/api/price_history/${productId}`)
+                    .then(response => {
+                        const data = response.data;
+                        const times = data.map(d => d.timestamp);
+                        const prices = data.map(d => d.price);
+
+                        // Y ekseni aralığını hesapla
+                        const minPrice = Math.min(...prices) * 0.995;
+                        const maxPrice = Math.max(...prices) * 1.005;
+
+                        return Plotly.update(`chart-${productId}`, {
+                            x: [times],
+                            y: [prices]
+                        }, {
+                            'yaxis.range': [minPrice, maxPrice]
+                        });
+                    })
+                    .then(() => resolve())
+                    .catch(error => {
+                        console.error(`Grafik güncelleme hatası (${productId}):`, error);
+                        reject(error);
+                    });
+            });
+        }
+
+        function updateMarketStats() {
+            return new Promise((resolve, reject) => {
+                axios.get('/api/products')
+                    .then(response => {
+                        const products = response.data;
+                        let totalVolume = 0;
+                        let totalChange = 0;
+
+                        products.forEach(product => {
+                            const volume = product.demand * product.current_price;
+                            totalVolume += volume;
+                            
+                            const change = ((product.current_price - product.base_price) / product.base_price) * 100;
+                            totalChange += change;
+
+                            // Her ürünün verilerini güncelle
+                            updateProductDisplay(product);
+                        });
+
+                        const avgChange = totalChange / products.length;
+
+                        document.getElementById('totalVolume').textContent = `${totalVolume.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} ₺`;
+                        document.getElementById('avgChange').textContent = `${avgChange.toFixed(2)}%`;
+                        document.getElementById('avgChange').className = 'stat-value ' + (avgChange >= 0 ? 'positive' : 'negative');
+                        resolve();
+                    })
+                    .catch(error => {
+                        console.error('Market istatistikleri güncelleme hatası:', error);
+                        reject(error);
+                    });
+            });
+        }
+
+        function updateProductDisplay(product) {
+            const card = document.querySelector(`.market-card[data-id="${product.id}"]`);
+            if (!card) return;
+
+            const change = ((product.current_price - product.base_price) / product.base_price * 100);
+            
+            // Fiyat ve değişim bilgilerini güncelle
+            const priceElement = card.querySelector('.current-price');
+            const changeElement = card.querySelector('.price-change');
+            
+            if (priceElement) {
+                priceElement.textContent = `${product.current_price.toFixed(2)} ₺`;
+                // Fiyat değişimini vurgula
+                priceElement.classList.add('highlight');
+                setTimeout(() => priceElement.classList.remove('highlight'), 1000);
+            }
+            
+            if (changeElement) {
+                changeElement.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+                changeElement.className = `price-change ${change >= 0 ? 'positive' : 'negative'}`;
+                // Değişimi vurgula
+                changeElement.classList.add('highlight');
+                setTimeout(() => changeElement.classList.remove('highlight'), 1000);
+            }
+            
+            // Diğer istatistikleri güncelle
+            card.querySelector('.demand-score').textContent = product.demand;
+            card.querySelector('.stock-value').textContent = `${product.remaining_stock}/${product.initial_stock}`;
+            
+            // Stok durumuna göre renklendirme
+            const stockRatio = product.remaining_stock / product.initial_stock;
+            const stockValue = card.querySelector('.stock-value');
+            if (stockRatio <= 0.1) {
+                stockValue.className = 'stat-value critical';
+            } else if (stockRatio <= 0.3) {
+                stockValue.className = 'stat-value warning';
+            } else {
+                stockValue.className = 'stat-value';
+            }
+        }
+
+        function buyProduct(productId) {
+            const button = document.querySelector(`.market-card[data-id="${productId}"] .trade-btn`);
+            
+            if (button.disabled) {
+                return;
+            }
+            
+            button.disabled = true;
+            button.classList.add('loading');
+            button.textContent = 'İşlem Yapılıyor...';
+
+            axios.post(`/buy/${productId}`)
+                .then(response => {
+                    if (response.data.success) {
+                        const products = response.data.products;
+                        
+                        // Tüm ürünlerin fiyatlarını anında güncelle
+                        products.forEach(product => {
+                            const card = document.querySelector(`.market-card[data-id="${product.id}"]`);
+                            if (!card) return;
+
+                            const change = ((product.current_price - product.base_price) / product.base_price * 100);
+                            
+                            // Fiyat ve değişim bilgilerini güncelle
+                            const priceElement = card.querySelector('.current-price');
+                            const changeElement = card.querySelector('.price-change');
+                            
+                            if (priceElement) {
+                                priceElement.textContent = `${product.current_price.toFixed(2)} ₺`;
+                                priceElement.classList.add('highlight');
+                                setTimeout(() => priceElement.classList.remove('highlight'), 1000);
+                            }
+                            
+                            if (changeElement) {
+                                changeElement.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}%`;
+                                changeElement.className = `price-change ${change >= 0 ? 'positive' : 'negative'}`;
+                                changeElement.classList.add('highlight');
+                                setTimeout(() => changeElement.classList.remove('highlight'), 1000);
+                            }
+                            
+                            // Diğer istatistikleri güncelle
+                            const demandElement = card.querySelector('.demand-score');
+                            const stockElement = card.querySelector('.stock-value');
+                            
+                            if (demandElement) {
+                                demandElement.textContent = product.demand;
+                            }
+                            
+                            if (stockElement) {
+                                stockElement.textContent = `${product.remaining_stock}/${product.initial_stock}`;
+                                // Stok durumuna göre renklendirme
+                                const stockRatio = product.remaining_stock / product.initial_stock;
+                                if (stockRatio <= 0.1) {
+                                    stockElement.className = 'stat-value critical';
+                                } else if (stockRatio <= 0.3) {
+                                    stockElement.className = 'stat-value warning';
+                                } else {
+                                    stockElement.className = 'stat-value';
+                                }
+                            }
+                        });
+                        
+                        // Market istatistiklerini güncelle
+                        let totalVolume = 0;
+                        let totalChange = 0;
+                        
+                        products.forEach(product => {
+                            const volume = product.demand * product.current_price;
+                            totalVolume += volume;
+                            const change = ((product.current_price - product.base_price) / product.base_price) * 100;
+                            totalChange += change;
+                        });
+                        
+                        const avgChange = totalChange / products.length;
+                        const volumeElement = document.getElementById('totalVolume');
+                        const avgChangeElement = document.getElementById('avgChange');
+                        
+                        if (volumeElement) {
+                            volumeElement.textContent = `${totalVolume.toLocaleString('tr-TR', { maximumFractionDigits: 0 })} ₺`;
+                        }
+                        
+                        if (avgChangeElement) {
+                            avgChangeElement.textContent = `${avgChange.toFixed(2)}%`;
+                            avgChangeElement.className = 'stat-value ' + (avgChange >= 0 ? 'positive' : 'negative');
+                        }
+                        
+                        // Grafikleri arka planda güncelle
+                        updateCharts().then(() => {
+                            button.style.backgroundColor = 'var(--accent-green)';
+                            button.textContent = 'İşlem Başarılı!';
+                        });
+                    } else {
+                        throw new Error(response.data.error || 'İşlem başarısız');
+                    }
+                })
+                .catch(error => {
+                    console.error('İşlem hatası:', error);
+                    button.style.backgroundColor = 'var(--accent-red)';
+                    button.textContent = error.response?.data?.error || 'İşlem Başarısız!';
+                    
+                    if (error.response?.data?.products) {
+                        const products = error.response.data.products;
+                        products.forEach(product => {
+                            updateProductDisplay(product);
+                        });
+                        updateCharts();
+                    }
+                })
+                .finally(() => {
+                    setTimeout(() => {
+                        button.disabled = false;
+                        button.classList.remove('loading');
+                        button.style.backgroundColor = '';
+                        button.textContent = 'İşlem Yap';
+                    }, 2000);
+                });
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            initializeCharts();
+            updateCharts();
+            
+            // Her 2 saniyede bir otomatik güncelleme
+            setInterval(() => {
+                updateCharts();
+            }, 2000);
+        });
+
+        // Style eklemeleri için head'e yeni CSS kuralları ekle
+        const style = document.createElement('style');
+        style.textContent = `
+            .highlight {
+                animation: highlight-pulse 1s ease-in-out;
+            }
+            
+            @keyframes highlight-pulse {
+                0% { opacity: 0.5; }
+                50% { opacity: 1; }
+                100% { opacity: 1; }
+            }
+        `;
+        document.head.appendChild(style);
+    </script>
+</body>
+</html> 
